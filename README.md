@@ -89,6 +89,13 @@ C:\msys64\ucrt64\bin
 C:\msys64
 ```
 
+`make` is installed as `mingw32-make` so I added the following to my Powershell profile:
+
+`vim $PROFILE`:
+```
+function make { mingw32-make @args }
+```
+
 ## License
 
 MIT © Michael Champanis 2026
