@@ -2,6 +2,8 @@
 
 A utility that launches Microsoft Store apps by name matching, working around the limitation of not being able to easily pin or shortcut their exact executable paths (unless I have completely missed something). You could use this to set up keyboard shortcuts to open the apps, for instance. `C:\Program Files\WindowsApps\` is restricted even to admin access, but the individual folders within are accessible if you know their name. This utility also avoids versioning issues by doing name matching for the package (app) and executable name.
 
+If a process is running with the same specified .exe then it switches to that instead of spawning a new process.
+
 ## How it works
 
 Duplicate and rename the exe to `appstoreopener-<package>-<executable>.exe`. On launch, it:
