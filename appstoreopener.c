@@ -1,5 +1,6 @@
 #include <windows.h>
 #include <shellapi.h>
+#include <tlhelp32.h>
 #include <wchar.h>
 #include <stdlib.h>
 
@@ -222,6 +223,54 @@ static void SearchPackagePaths(const WCHAR *psOutput, SearchCtx *ctx) {
     }
 }
 
+typedef struct { DWORD pid; HWND hwnd; } FindWndData;
+
+static BOOL CALLBACK FindWindowByPid(HWND hwnd, LPARAM lParam) {
+    FindWndData *d = (FindWndData *)lParam;
+    DWORD pid = 0;
+    GetWindowThreadProcessId(hwnd, &pid);
+    if (pid == d->pid && IsWindowVisible(hwnd)) {
+        d->hwnd = hwnd;
+        return FALSE; /* stop enumeration */
+    }
+    return TRUE;
+}
+
+/*
+ * If exePath is already running, bring its window to the foreground.
+ * Returns TRUE if a running instance was found and focused.
+ */
+static BOOL FindAndFocusRunningInstance(const WCHAR *exePath) {
+    const WCHAR *exeName = wcsrchr(exePath, L'\\');
+    exeName = exeName ? exeName + 1 : exePath;
+
+    HANDLE hSnap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0);
+    if (hSnap == INVALID_HANDLE_VALUE) return FALSE;
+
+    PROCESSENTRY32W pe = {0};
+    pe.dwSize = sizeof(pe);
+    DWORD targetPid = 0;
+    if (Process32FirstW(hSnap, &pe)) {
+        do {
+            if (_wcsicmp(pe.szExeFile, exeName) == 0) {
+                targetPid = pe.th32ProcessID;
+                break;
+            }
+        } while (Process32NextW(hSnap, &pe));
+    }
+    CloseHandle(hSnap);
+
+    if (targetPid == 0) return FALSE;
+
+    FindWndData d = {targetPid, NULL};
+    EnumWindows(FindWindowByPid, (LPARAM)&d);
+    if (!d.hwnd) return FALSE;
+
+    if (IsIconic(d.hwnd)) ShowWindow(d.hwnd, SW_RESTORE);
+    SetForegroundWindow(d.hwnd);
+    return TRUE;
+}
+
 /* entry point */
 int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine, int nCmdShow) {
     (void)hInstance; (void)hPrevInstance; (void)lpCmdLine; (void)nCmdShow;
@@ -394,23 +443,24 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         ret = 1;
 
     } else if (!dryRun) {
-        /* launch the first (alphabetically earliest) match */
-        SHELLEXECUTEINFOW sei = {0};
-        sei.cbSize = sizeof(sei);
-        //sei.fMask  = SEE_MASK_NOCLOSEPROCESS;
-        sei.lpVerb = L"open";
-        sei.lpFile = ctx.paths[0];
-        sei.nShow  = SW_SHOW;
+        /* if already running, focus its window instead of launching a new instance */
+        if (!FindAndFocusRunningInstance(ctx.paths[0])) {
+            SHELLEXECUTEINFOW sei = {0};
+            sei.cbSize = sizeof(sei);
+            sei.lpVerb = L"open";
+            sei.lpFile = ctx.paths[0];
+            sei.nShow  = SW_SHOW;
 
-        if (!ShellExecuteExW(&sei)) {
-            WCHAR msg[PATHBUF_LEN + 64];
-            _snwprintf(msg, PATHBUF_LEN + 64,
-                L"Failed to launch:\n%s\n\nError: %lu",
-                ctx.paths[0], GetLastError()
-            );
-            msg[PATHBUF_LEN + 63] = L'\0';
-            MessageBoxW(NULL, msg, L"appstoreopener", MB_OK | MB_ICONERROR);
-            ret = 1;
+            if (!ShellExecuteExW(&sei)) {
+                WCHAR msg[PATHBUF_LEN + 64];
+                _snwprintf(msg, PATHBUF_LEN + 64,
+                    L"Failed to launch:\n%s\n\nError: %lu",
+                    ctx.paths[0], GetLastError()
+                );
+                msg[PATHBUF_LEN + 63] = L'\0';
+                MessageBoxW(NULL, msg, L"appstoreopener", MB_OK | MB_ICONERROR);
+                ret = 1;
+            }
         }
     }
 
