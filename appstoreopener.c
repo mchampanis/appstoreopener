@@ -3,9 +3,10 @@
 #include <wchar.h>
 #include <stdlib.h>
 
-#define MAX_RESULTS    16
-#define PATHBUF_LEN    4096                      /* wide chars per path buffer */
-#define PS_OUT_WCHARS  (MAX_RESULTS * MAX_PATH)  /* wide chars for PS output */
+#define MAX_RESULTS       16
+#define MAX_SEARCH_DEPTH  16
+#define PATHBUF_LEN       4096                      /* wide chars per path buffer */
+#define PS_OUT_WCHARS     (MAX_RESULTS * MAX_PATH)  /* wide chars for PS output */
 
 typedef struct {
     const WCHAR *exeTerm;
@@ -65,8 +66,9 @@ static void MakeExtendedPattern(const WCHAR *dir, WCHAR *out, int outLen) {
     out[outLen - 1] = L'\0';
 }
 
-static void SearchDir(const WCHAR *dir, SearchCtx *ctx) {
+static void SearchDir(const WCHAR *dir, SearchCtx *ctx, int depth) {
     if (ctx->matchCount >= MAX_RESULTS) return;
+    if (depth > MAX_SEARCH_DEPTH) return;
 
     WCHAR pattern[PATHBUF_LEN];
     MakeExtendedPattern(dir, pattern, PATHBUF_LEN);
@@ -92,7 +94,7 @@ static void SearchDir(const WCHAR *dir, SearchCtx *ctx) {
         fullPath[PATHBUF_LEN - 1] = L'\0';
 
         if (fd.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) {
-            SearchDir(fullPath, ctx);
+            SearchDir(fullPath, ctx, depth + 1);
         } else {
             WCHAR lower[MAX_PATH];
             wcsncpy(lower, fd.cFileName, MAX_PATH - 1);
@@ -166,7 +168,8 @@ static BOOL RunPowerShell(const WCHAR *psCmd, WCHAR *outBuf, int outWChars) {
     char *raw = malloc(rawCap);
     if (!raw) {
         CloseHandle(hRead);
-        WaitForSingleObject(pi.hProcess, 30000);
+        if (WaitForSingleObject(pi.hProcess, 30000) == WAIT_TIMEOUT)
+            TerminateProcess(pi.hProcess, 1);
         CloseHandle(pi.hProcess);
         CloseHandle(pi.hThread);
         return FALSE;
@@ -178,7 +181,8 @@ static BOOL RunPowerShell(const WCHAR *psCmd, WCHAR *outBuf, int outWChars) {
         total += bytesRead;
     }
 
-    WaitForSingleObject(pi.hProcess, 30000);
+    if (WaitForSingleObject(pi.hProcess, 30000) == WAIT_TIMEOUT)
+        TerminateProcess(pi.hProcess, 1);
     CloseHandle(pi.hProcess);
     CloseHandle(pi.hThread);
     CloseHandle(hRead);
@@ -211,7 +215,7 @@ static void SearchPackagePaths(const WCHAR *psOutput, SearchCtx *ctx) {
                 *end-- = L'\0';
 
             if (line[0] != L'\0')
-                SearchDir(line, ctx);
+                SearchDir(line, ctx, 0);
         }
 
         if (*p == L'\n') p++;
@@ -224,8 +228,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     int ret = 0;
 
-    /* use the wide command line so Unicode arguments are handled correctly */
-    BOOL dryRun = (wcsstr(GetCommandLineW(), L"--dry-run") != NULL);
+    /* parse arguments properly — wcsstr on the raw command line would match
+       --dry-run inside the exe path itself */
+    BOOL dryRun = FALSE;
+    int argc;
+    LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv) {
+        for (int i = 1; i < argc; i++) {
+            if (wcscmp(argv[i], L"--dry-run") == 0) { dryRun = TRUE; break; }
+        }
+        LocalFree(argv);
+    }
 
     WCHAR modulePath[PATHBUF_LEN];
     if (!GetModuleFileNameW(NULL, modulePath, PATHBUF_LEN)) {
