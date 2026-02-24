@@ -1,0 +1,46 @@
+name: Build
+
+on:
+  push:
+    branches: [main]
+  release:
+    types: [created]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install MinGW
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make
+
+      - name: Get version
+        id: version
+        shell: bash
+        run: echo "VERSION=$(git describe --tags --always --dirty)" >> $GITHUB_OUTPUT
+
+      - name: Build
+        shell: msys2 {0}
+        run: |
+          gcc -Wall -O2 -mwindows \
+            -DVERSION=\"${{ steps.version.outputs.VERSION }}\" \
+            -o appstoreopener.exe appstoreopener.c -lshell32
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: appstoreopener-${{ steps.version.outputs.VERSION }}
+          path: appstoreopener.exe
+
+      - name: Upload to release
+        if: github.event_name == 'release'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: appstoreopener.exe
