@@ -276,10 +276,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     }
     pkgTermNorm[ni] = L'\0';
 
-    if (pkgTermNorm[0] == L'\0') {
+    if (pkgTermNorm[0] == L'\0' || wcslen(pkgTermNorm) < 4 || wcslen(exeTerm) < 4) {
         MessageBoxW(NULL,
-            L"The package term in the filename must contain alphanumeric characters.\n\n"
-            L"Example: appstoreopener-abc-def1.exe",
+            L"The package and executable terms must each be at least 4 characters.\n\n"
+            L"Short terms match too many packages or executables.\n\n"
+            L"Example: appstoreopener-spotify-spotify.exe",
             L"appstoreopener", MB_OK | MB_ICONERROR
         );
         return 1;
@@ -309,7 +310,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         WCHAR msg[512];
         _snwprintf(msg, 512,
             L"No installed package found matching '%s' (normalized: '%s').\n\n"
-            L"Was the app installed from the Microsoft Store (C:\\Program Files\\WindowsApps\\...)?",
+            L"Was the app installed from the Microsoft Store (e.g. C:\\Program Files\\WindowsApps)?",
             pkgTerm, pkgTermNorm
         );
         msg[511] = L'\0';
@@ -322,12 +323,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     SearchCtx ctx = {0};
     ctx.exeTerm = exeTerm;
     SearchPackagePaths(psOutput, &ctx);
-    free(psOutput);
 
     if (ctx.matchCount > 1)
         qsort(ctx.paths, ctx.matchCount, sizeof(WCHAR *), ComparePaths);
 
-    /* dry-run mode: list all matches sorted and exit */
+    /* dry-run mode: list matches sorted; if none, list all .exe files as a hint */
     if (dryRun) {
         WCHAR header[512];
         _snwprintf(header, 512,
@@ -336,12 +336,23 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         );
         header[511] = L'\0';
 
-        int listWChars = ctx.matchCount * (PATHBUF_LEN + 8) + 1;
+        /* matching results, or (if no match) all .exe files in the package */
+        SearchCtx fallback = {0};
+        const SearchCtx *display = &ctx;
+        if (ctx.matchCount == 0) {
+            fallback.exeTerm = L"";
+            SearchPackagePaths(psOutput, &fallback);
+            if (fallback.matchCount > 1)
+                qsort(fallback.paths, fallback.matchCount, sizeof(WCHAR *), ComparePaths);
+            display = &fallback;
+        }
+
+        int listWChars = display->matchCount * (PATHBUF_LEN + 8) + 1;
         WCHAR *list = calloc(listWChars, sizeof(WCHAR));
         if (list) {
-            for (int i = 0; i < ctx.matchCount; i++) {
+            for (int i = 0; i < display->matchCount; i++) {
                 WCHAR line[PATHBUF_LEN + 8];
-                _snwprintf(line, PATHBUF_LEN + 8, L"%d. %s\n", i + 1, ctx.paths[i]);
+                _snwprintf(line, PATHBUF_LEN + 8, L"%d. %s\n", i + 1, display->paths[i]);
                 line[PATHBUF_LEN + 7] = L'\0';
                 wcsncat(list, line, listWChars - wcslen(list) - 1);
             }
@@ -350,15 +361,29 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         int msgWChars = 512 + listWChars;
         WCHAR *msg = malloc(msgWChars * sizeof(WCHAR));
         if (msg) {
-            _snwprintf(msg, msgWChars, L"%s%s", header,
-                ctx.matchCount == 0 ? L"(no matching executables found)" : (list ? list : L""));
+            if (ctx.matchCount > 0) {
+                _snwprintf(msg, msgWChars, L"%s%s", header, list ? list : L"");
+            } else if (fallback.matchCount > 0) {
+                _snwprintf(msg, msgWChars,
+                    L"%sNo match for '%s*.exe'. Available executables in package:\n%s",
+                    header, exeTerm, list ? list : L"");
+            } else {
+                _snwprintf(msg, msgWChars,
+                    L"%sNo match for '%s*.exe', and no executables found in package at all.",
+                    header, exeTerm);
+            }
             msg[msgWChars - 1] = L'\0';
             MessageBoxW(NULL, msg, L"appstoreopener --dry-run", MB_OK | MB_ICONINFORMATION);
             free(msg);
         }
         free(list);
+        for (int i = 0; i < fallback.matchCount; i++)
+            free(fallback.paths[i]);
+    }
 
-    } else if (ctx.matchCount == 0) {
+    free(psOutput);
+
+    if (!dryRun && ctx.matchCount == 0) {
         WCHAR msg[256];
         _snwprintf(msg, 256,
             L"No executable matching '%s*.exe' found in the package directory.",
@@ -368,7 +393,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         MessageBoxW(NULL, msg, L"appstoreopener", MB_OK | MB_ICONWARNING);
         ret = 1;
 
-    } else {
+    } else if (!dryRun) {
         /* launch the first (alphabetically earliest) match */
         SHELLEXECUTEINFOW sei = {0};
         sei.cbSize = sizeof(sei);

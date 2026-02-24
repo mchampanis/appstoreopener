@@ -9,7 +9,7 @@ Duplicate and rename the exe to `appstoreopener-<package>-<executable>.exe`. On 
 1. Reads its own filename and extracts the package and executable terms
 2. Runs `(Get-AppxPackage -Name "*<package>*").InstallLocation` via PowerShell to locate the app folder inside `C:\Program Files\WindowsApps\`
 3. Searches that directory for an .exe whose name contains the executable term
-4. Launches that file
+4. Launches the executable
 
 To setup, use `Get-AppxPackage` in the console to find your installed package names, and the path to go look in for the executable.
 
