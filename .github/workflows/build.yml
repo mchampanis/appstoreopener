@@ -25,6 +25,7 @@ jobs:
         with:
           msystem: UCRT64
           install: mingw-w64-ucrt-x86_64-gcc mingw-w64-ucrt-x86_64-make
+          cache: true
 
       - name: Get version
         id: version
@@ -48,5 +49,5 @@ jobs:
         if: github.event_name == 'release' || github.event_name == 'workflow_dispatch'
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.event.inputs.tag || github.ref }}
+          tag_name: ${{ github.event.inputs.tag || github.ref_name }}
           files: appstoreopener.exe
