@@ -35,7 +35,7 @@ jobs:
       - name: Build
         shell: msys2 {0}
         run: |
-          make VERSION="${{ steps.version.outputs.VERSION }}"
+          mingw32-make VERSION="${{ steps.version.outputs.VERSION }}"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
