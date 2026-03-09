@@ -3,6 +3,7 @@
 #include <tlhelp32.h>
 #include <wchar.h>
 #include <stdlib.h>
+#include "version.h"
 
 #define MAX_RESULTS       16
 #define MAX_SEARCH_DEPTH  16
