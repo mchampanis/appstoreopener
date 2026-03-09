@@ -284,7 +284,17 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (argv) {
         for (int i = 1; i < argc; i++) {
-            if (wcscmp(argv[i], L"--dry-run") == 0) { dryRun = TRUE; break; }
+            if (wcscmp(argv[i], L"--dry-run") == 0) {
+                dryRun = TRUE;
+            } else if (wcscmp(argv[i], L"--version") == 0) {
+#ifdef VERSION
+                MessageBoxW(NULL, L"appstoreopener version: " L"" VERSION, L"appstoreopener", MB_OK | MB_ICONINFORMATION);
+#else
+                MessageBoxW(NULL, L"appstoreopener version: (dev build)", L"appstoreopener", MB_OK | MB_ICONINFORMATION);
+#endif
+                LocalFree(argv);
+                return 0;
+            }
         }
         LocalFree(argv);
     }
@@ -376,9 +386,15 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
     /* dry-run mode: list matches sorted; if none, list all .exe files as a hint */
     if (dryRun) {
         WCHAR header[512];
+#ifdef VERSION
+        const WCHAR *verStr = L"version " L"" VERSION L"\n";
+#else
+        const WCHAR *verStr = L"(dev build)\n";
+#endif
         _snwprintf(header, 512,
+            L"appstoreopener %s\n"
             L"Package: *%s* (normalized: *%s*)\nExecutable search: %s*.exe\n\n",
-            pkgTerm, pkgTermNorm, exeTerm
+            verStr, pkgTerm, pkgTermNorm, exeTerm
         );
         header[511] = L'\0';
 

@@ -35,9 +35,7 @@ jobs:
       - name: Build
         shell: msys2 {0}
         run: |
-          gcc -Wall -O2 -mwindows \
-            -DVERSION=\"${{ steps.version.outputs.VERSION }}\" \
-            -o appstoreopener.exe appstoreopener.c -lshell32
+          make VERSION=${{ steps.version.outputs.VERSION }}
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
