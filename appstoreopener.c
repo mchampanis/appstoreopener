@@ -151,7 +151,7 @@ static void NormalizeName(const WCHAR *in, WCHAR *out, int outLen) {
  * package's install directory for executables.
  *
  * Packages are registered under:
- *   HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages
+ *   HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages
  * Each subkey is a package full name; its PackageRootFolder value is the path.
  *
  * Returns ERROR_SUCCESS on success, or a Win32 error code on failure.
@@ -291,7 +291,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
 
     WCHAR modulePath[PATHBUF_LEN];
     if (!GetModuleFileNameW(NULL, modulePath, PATHBUF_LEN)) {
-        MessageBoxW(NULL, 
+        MessageBoxW(NULL,
             L"Failed to get module filename.",
             L"appstoreopener", MB_OK | MB_ICONERROR
         );

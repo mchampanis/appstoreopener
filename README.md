@@ -1,19 +1,23 @@
 # appstoreopener
 
-A utility that launches Microsoft Store apps by name matching, working around the limitation of not being able to easily pin or shortcut their exact executable paths (unless I have completely missed something). You could use this to set up keyboard shortcuts to open the apps, for instance. `C:\Program Files\WindowsApps\` is restricted even to admin access, but the individual folders within are accessible if you know their name. This utility also avoids versioning issues by doing name matching for the package (app) and executable name.
+A utility that launches Microsoft Store apps by name matching, working around the limitation of not being able to easily pin or shortcut their exact executable paths (unless I have completely missed something). You could use this to set up keyboard shortcuts to open MS Store apps, for instance.
 
-If a process is running with the same specified .exe then it switches to that instead of spawning a new process.
+`C:\Program Files\WindowsApps\` is restricted (even) from admin enumeration, but the individual package folders within are accessible if you know their name.
+
+This utility also avoids versioning issues and updated version paths changing by doing name matching for the package (app) and executable name.
+
+If a process is running with the same specified .exe then it switches to that instead of spawning a duplicate process.
 
 ## How it works
 
 Duplicate and rename the exe to `appstoreopener-<package>-<executable>.exe`. On launch, it:
 
 1. Reads its own filename and extracts the package and executable terms
-2. Runs `(Get-AppxPackage -Name "*<package>*").InstallLocation` via PowerShell to locate the app folder inside `C:\Program Files\WindowsApps\`
-3. Searches that directory for an .exe whose name contains the executable term
-4. Launches the executable
+2. Searches `HKCU\Software\Classes\Local Settings\Software\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages` for installed packages and retrieves their installation paths
+3. Searches the found path for an .exe whose name contains the executable term
+4. Launches the executable, if found
 
-To setup, use `Get-AppxPackage` in the console to find your installed package names, and the path to go look in for the executable.
+To setup, use `Get-AppxPackage` in the console to find your installed package names, and then the path to go look in for the executable.
 
 ### Naming convention
 
@@ -30,11 +34,11 @@ The package segment is matched against installed package names. The executable s
 
 To find the right terms, run `(Get-AppxPackage -Name "*<package>*").InstallLocation` in a PowerShell console to confirm the package name, then rename `appstoreopener.exe` and afterwards use `--dry-run` to verify the exe is found.
 
-The package name is normalised to lowercase [a-z0-9] before matching.
+The package name is normalised to lowercase [a-z0-9] before matching against your search term.
 
 ## Installation
 
-Build the project, then copy and rename `appstoreopener.exe` for each app you want to launch. Keep all your renamed copies in a single dedicated folder and add that folder to your `PATH` - every copy is accessible from Run (`Win+R`), the Start menu search, console, etc.
+Build the project, then copy and rename `appstoreopener.exe` for each app you want to launch. Keep all your renamed copies in a single dedicated folder and add that folder to your `PATH` - every copy is then accessible from Run (`Win+R`), the Start menu search, console, etc.
 
 **Recommended install location:** `%userprofile%\AppData\Local\appstoreopener\`
 
