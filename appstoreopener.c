@@ -6,14 +6,24 @@
 
 #define MAX_RESULTS       16
 #define MAX_SEARCH_DEPTH  16
-#define PATHBUF_LEN       4096                      /* wide chars per path buffer */
-#define PS_OUT_WCHARS     (MAX_RESULTS * MAX_PATH)  /* wide chars for PS output */
+#define PATHBUF_LEN       4096  /* wide chars per path buffer */
 
 typedef struct {
     const WCHAR *exeTerm;
+    WCHAR        exeTermLower[MAX_PATH]; /* lowercased exeTerm, computed once */
+    size_t       exeTermLen;
     int          matchCount;
     WCHAR       *paths[MAX_RESULTS]; /* heap-alloc'd PATHBUF_LEN WCHARs each */
 } SearchCtx;
+
+static void SearchCtxInit(SearchCtx *ctx, const WCHAR *exeTerm) {
+    memset(ctx, 0, sizeof(*ctx));
+    ctx->exeTerm = exeTerm;
+    wcsncpy(ctx->exeTermLower, exeTerm, MAX_PATH - 1);
+    ctx->exeTermLower[MAX_PATH - 1] = L'\0';
+    CharLowerW(ctx->exeTermLower);
+    ctx->exeTermLen = wcslen(ctx->exeTermLower);
+}
 
 /*  appstoreopener-raindropio-raindrop.exe  -> pkg="raindropio"  exe="raindrop"
     appstoreopener-spotify-spotify.exe      -> pkg="spotify"     exe="spotify"
@@ -78,13 +88,6 @@ static void SearchDir(const WCHAR *dir, SearchCtx *ctx, int depth) {
     HANDLE hFind = FindFirstFileW(pattern, &fd);
     if (hFind == INVALID_HANDLE_VALUE) return;
 
-    /* generate lower-case search term once per call */
-    WCHAR termLower[MAX_PATH];
-    wcsncpy(termLower, ctx->exeTerm, MAX_PATH - 1);
-    termLower[MAX_PATH - 1] = L'\0';
-    CharLowerW(termLower);
-    size_t termLen = wcslen(termLower);
-
     do {
         if (wcscmp(fd.cFileName, L".") == 0 || wcscmp(fd.cFileName, L"..") == 0)
             continue;
@@ -105,8 +108,8 @@ static void SearchDir(const WCHAR *dir, SearchCtx *ctx, int depth) {
             size_t nameLen = wcslen(lower);
             const WCHAR *ext = wcsrchr(lower, L'.');
 
-            if (nameLen >= termLen &&
-                wcsncmp(lower, termLower, termLen) == 0 &&
+            if (nameLen >= ctx->exeTermLen &&
+                wcsncmp(lower, ctx->exeTermLower, ctx->exeTermLen) == 0 &&
                 ext && wcscmp(ext, L".exe") == 0) {
 
                 if (ctx->matchCount < MAX_RESULTS) {
@@ -129,98 +132,95 @@ static int ComparePaths(const void *a, const void *b) {
 }
 
 /*
- * run psCmd via PowerShell, capture UTF-8 output, and decode it into outBuf.
- * outWChars is the capacity of outBuf including the NUL terminator.
+ * Normalize a package name segment: keep only ASCII alphanumerics, lowercase.
+ * Matches the same normalization applied to the search term in WinMain.
  */
-static BOOL RunPowerShell(const WCHAR *psCmd, WCHAR *outBuf, int outWChars) {
-    SECURITY_ATTRIBUTES sa = {sizeof(sa), NULL, TRUE};
-    HANDLE hRead, hWrite;
-    if (!CreatePipe(&hRead, &hWrite, &sa, 0)) return FALSE;
-    SetHandleInformation(hRead, HANDLE_FLAG_INHERIT, 0);
-
-    /* force UTF-8 stdout so MultiByteToWideChar can decode it reliably */
-    WCHAR cmdLine[4096];
-    _snwprintf(cmdLine, 4096,
-        L"powershell.exe -NoProfile -NonInteractive -Command "
-        L"\"[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; %s\"",
-        psCmd
-    );
-    cmdLine[4095] = L'\0';
-
-    STARTUPINFOW si = {0};
-    si.cb          = sizeof(si);
-    si.dwFlags     = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-    si.wShowWindow = SW_HIDE;
-    si.hStdInput   = GetStdHandle(STD_INPUT_HANDLE);
-    si.hStdOutput  = hWrite;
-    si.hStdError   = GetStdHandle(STD_ERROR_HANDLE);
-
-    PROCESS_INFORMATION pi = {0};
-    BOOL ok = CreateProcessW(
-        NULL, cmdLine, NULL, NULL, TRUE,
-        CREATE_NO_WINDOW, NULL, NULL, &si, &pi
-    );
-    CloseHandle(hWrite);
-
-    if (!ok) { CloseHandle(hRead); return FALSE; }
-
-    /* UTF-8 uses at most 4 bytes per Unicode code point */
-    int rawCap = outWChars * 4;
-    char *raw = malloc(rawCap);
-    if (!raw) {
-        CloseHandle(hRead);
-        if (WaitForSingleObject(pi.hProcess, 30000) == WAIT_TIMEOUT)
-            TerminateProcess(pi.hProcess, 1);
-        CloseHandle(pi.hProcess);
-        CloseHandle(pi.hThread);
-        return FALSE;
+static void NormalizeName(const WCHAR *in, WCHAR *out, int outLen) {
+    int ni = 0;
+    for (int i = 0; in[i] && ni < outLen - 1; i++) {
+        WCHAR c = in[i];
+        if      (c >= L'a' && c <= L'z') out[ni++] = c;
+        else if (c >= L'A' && c <= L'Z') out[ni++] = c + (L'a' - L'A');
+        else if (c >= L'0' && c <= L'9') out[ni++] = c;
     }
-
-    DWORD total = 0, bytesRead;
-    while ((int)total < rawCap - 1) {
-        if (!ReadFile(hRead, raw + total, rawCap - 1 - total, &bytesRead, NULL) || bytesRead == 0) break;
-        total += bytesRead;
-    }
-
-    if (WaitForSingleObject(pi.hProcess, 30000) == WAIT_TIMEOUT)
-        TerminateProcess(pi.hProcess, 1);
-    CloseHandle(pi.hProcess);
-    CloseHandle(pi.hThread);
-    CloseHandle(hRead);
-
-    if (total == 0) { free(raw); return FALSE; }
-
-    int written = MultiByteToWideChar(CP_UTF8, 0, raw, (int)total, outBuf, outWChars - 1);
-    free(raw);
-    if (written == 0) return FALSE;
-    outBuf[written] = L'\0';
-    return TRUE;
+    out[ni] = L'\0';
 }
 
-/* split newline-separated InstallLocation paths and search each */
-static void SearchPackagePaths(const WCHAR *psOutput, SearchCtx *ctx) {
-    const WCHAR *p = psOutput;
-    while (*p && ctx->matchCount < MAX_RESULTS) {
-        const WCHAR *lineStart = p;
-        while (*p && *p != L'\n') p++;
+/*
+ * Enumerate installed packages via the AppX registry and search each matching
+ * package's install directory for executables.
+ *
+ * Packages are registered under:
+ *   HKLM\SOFTWARE\Microsoft\Windows\CurrentVersion\AppModel\Repository\Packages
+ * Each subkey is a package full name; its PackageRootFolder value is the path.
+ *
+ * Returns ERROR_SUCCESS on success, or a Win32 error code on failure.
+ */
+static LONG FindAndSearchMatchingPackages(const WCHAR *pkgTermNorm, SearchCtx *ctx) {
+    static const WCHAR *REG_KEY =
+        L"Software\\Classes\\Local Settings\\Software\\Microsoft\\Windows"
+        L"\\CurrentVersion\\AppModel\\Repository\\Packages";
 
-        int lineLen = (int)(p - lineStart);
-        if (lineLen > 0 && lineLen < PATHBUF_LEN) {
-            WCHAR line[PATHBUF_LEN];
-            wcsncpy(line, lineStart, lineLen);
-            line[lineLen] = L'\0';
+    HKEY hRoot;
+    LONG rc = RegOpenKeyExW(HKEY_CURRENT_USER, REG_KEY, 0, KEY_READ, &hRoot);
+    if (rc != ERROR_SUCCESS) return rc;
 
-            /* trim trailing whitespace / CR */
-            WCHAR *end = line + lineLen - 1;
-            while (end >= line && (*end == L'\r' || *end == L' ' || *end == L'\t'))
-                *end-- = L'\0';
+    size_t termLen = wcslen(pkgTermNorm);
 
-            if (line[0] != L'\0')
-                SearchDir(line, ctx, 0);
+    DWORD idx = 0;
+    WCHAR pkgFullName[MAX_PATH];
+    DWORD nameLen;
+
+    while (ctx->matchCount < MAX_RESULTS) {
+        nameLen = MAX_PATH;
+        rc = RegEnumKeyExW(hRoot, idx++, pkgFullName, &nameLen,
+                           NULL, NULL, NULL, NULL);
+        if (rc == ERROR_NO_MORE_ITEMS) { rc = ERROR_SUCCESS; break; }
+        if (rc != ERROR_SUCCESS) break;
+
+        /* package full name: "PublisherName.AppName_1.2.3_x64__publisherid"
+           the identity Name is everything before the first '_' */
+        WCHAR nameOnly[MAX_PATH];
+        wcsncpy(nameOnly, pkgFullName, MAX_PATH - 1);
+        nameOnly[MAX_PATH - 1] = L'\0';
+        WCHAR *us = wcschr(nameOnly, L'_');
+        if (us) *us = L'\0';
+
+        /* normalize and check for substring match */
+        WCHAR normalized[MAX_PATH];
+        NormalizeName(nameOnly, normalized, MAX_PATH);
+        int normLen = (int)wcslen(normalized);
+
+        if (termLen > 0) {
+            if (normLen < (int)termLen) continue;
+            BOOL found = FALSE;
+            for (int j = 0; j <= normLen - (int)termLen; j++) {
+                if (wcsncmp(normalized + j, pkgTermNorm, termLen) == 0) {
+                    found = TRUE;
+                    break;
+                }
+            }
+            if (!found) continue;
         }
 
-        if (*p == L'\n') p++;
+        /* open the package subkey and read PackageRootFolder */
+        HKEY hPkg;
+        if (RegOpenKeyExW(hRoot, pkgFullName, 0, KEY_READ, &hPkg) != ERROR_SUCCESS)
+            continue;
+
+        WCHAR rootFolder[PATHBUF_LEN];
+        DWORD rootLen = sizeof(rootFolder);
+        DWORD type;
+        LONG rv = RegQueryValueExW(hPkg, L"PackageRootFolder", NULL,
+                                   &type, (LPBYTE)rootFolder, &rootLen);
+        RegCloseKey(hPkg);
+
+        if (rv == ERROR_SUCCESS && type == REG_SZ)
+            SearchDir(rootFolder, ctx, 0);
     }
+
+    RegCloseKey(hRoot);
+    return rc;
 }
 
 typedef struct { DWORD pid; HWND hwnd; } FindWndData;
@@ -316,14 +316,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
      * same package regardless of punctuation in the filename or package name.
      */
     WCHAR pkgTermNorm[MAX_PATH];
-    int ni = 0;
-    for (int i = 0; pkgTerm[i] && ni < MAX_PATH - 1; i++) {
-        WCHAR c = pkgTerm[i];
-        if (c >= L'a' && c <= L'z')      pkgTermNorm[ni++] = c;
-        else if (c >= L'A' && c <= L'Z') pkgTermNorm[ni++] = c + (L'a' - L'A');
-        else if (c >= L'0' && c <= L'9') pkgTermNorm[ni++] = c;
-    }
-    pkgTermNorm[ni] = L'\0';
+    NormalizeName(pkgTerm, pkgTermNorm, MAX_PATH);
 
     if (pkgTermNorm[0] == L'\0' || wcslen(pkgTermNorm) < 4 || wcslen(exeTerm) < 4) {
         MessageBoxW(NULL,
@@ -335,43 +328,47 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         return 1;
     }
 
-    /*
-     * query PowerShell: strip non-alphanumeric chars from each package name
-     * before comparing, so "Raindrop.io" matches the search term "raindropio".
-     * PowerShell's -like operator is case-insensitive.
-     */
-    WCHAR psCmd[1024];
-    _snwprintf(psCmd, 1024,
-        L"(Get-AppxPackage | Where-Object { "
-        L"($_.Name -replace '[^a-zA-Z0-9]','') -like '*%s*' "
-        L"}).InstallLocation",
-        pkgTermNorm
-    );
-    psCmd[1023] = L'\0';
+    /* collect all matching executables via the native AppModel API, then sort */
+    SearchCtx ctx;
+    SearchCtxInit(&ctx, exeTerm);
 
-    WCHAR *psOutput = malloc(PS_OUT_WCHARS * sizeof(WCHAR));
-    if (!psOutput) {
-        MessageBoxW(NULL, L"Out of memory.", L"appstoreopener", MB_OK | MB_ICONERROR);
+    LONG enumRc = FindAndSearchMatchingPackages(pkgTermNorm, &ctx);
+    if (enumRc != ERROR_SUCCESS) {
+        /* write diagnostics to a temp file and open it so the text is copyable */
+        WCHAR tmpDir[MAX_PATH], logPath[MAX_PATH];
+        GetTempPathW(MAX_PATH, tmpDir);
+        _snwprintf(logPath, MAX_PATH, L"%sappstoreopener_debug.txt", tmpDir);
+        logPath[MAX_PATH - 1] = L'\0';
+
+        HANDLE hLog = CreateFileW(logPath, GENERIC_WRITE, 0, NULL,
+                                  CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (hLog != INVALID_HANDLE_VALUE) {
+            WCHAR wline[512];
+            _snwprintf(wline, 512,
+                L"Failed to open the AppX package registry (code: %ld)\r\n\r\n"
+                L"Expected key:\r\n"
+                L"HKCU\\Software\\Classes\\Local Settings\\Software\\Microsoft"
+                L"\\Windows\\CurrentVersion\\AppModel\\Repository\\Packages\r\n",
+                enumRc);
+            wline[511] = L'\0';
+            DWORD written;
+            WORD bom = 0xFEFF;
+            WriteFile(hLog, &bom, sizeof(bom), &written, NULL);
+            WriteFile(hLog, wline, (DWORD)(wcslen(wline) * sizeof(WCHAR)), &written, NULL);
+            CloseHandle(hLog);
+
+            ShellExecuteW(NULL, L"open", L"notepad.exe", logPath, NULL, SW_SHOW);
+        } else {
+            /* fallback to message box if we can't write the file */
+            WCHAR msg[512];
+            _snwprintf(msg, 512,
+                L"Failed to open the AppX package registry (code: %ld).",
+                enumRc);
+            msg[511] = L'\0';
+            MessageBoxW(NULL, msg, L"appstoreopener", MB_OK | MB_ICONWARNING);
+        }
         return 1;
     }
-
-    if (!RunPowerShell(psCmd, psOutput, PS_OUT_WCHARS)) {
-        WCHAR msg[512];
-        _snwprintf(msg, 512,
-            L"No installed package found matching '%s' (normalized: '%s').\n\n"
-            L"Was the app installed from the Microsoft Store (e.g. C:\\Program Files\\WindowsApps)?",
-            pkgTerm, pkgTermNorm
-        );
-        msg[511] = L'\0';
-        MessageBoxW(NULL, msg, L"appstoreopener", MB_OK | MB_ICONWARNING);
-        free(psOutput);
-        return 1;
-    }
-
-    /* collect all matching executables, then sort alphabetically */
-    SearchCtx ctx = {0};
-    ctx.exeTerm = exeTerm;
-    SearchPackagePaths(psOutput, &ctx);
 
     if (ctx.matchCount > 1)
         qsort(ctx.paths, ctx.matchCount, sizeof(WCHAR *), ComparePaths);
@@ -386,11 +383,11 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         header[511] = L'\0';
 
         /* matching results, or (if no match) all .exe files in the package */
-        SearchCtx fallback = {0};
+        SearchCtx fallback;
         const SearchCtx *display = &ctx;
         if (ctx.matchCount == 0) {
-            fallback.exeTerm = L"";
-            SearchPackagePaths(psOutput, &fallback);
+            SearchCtxInit(&fallback, L"");
+            FindAndSearchMatchingPackages(pkgTermNorm, &fallback);
             if (fallback.matchCount > 1)
                 qsort(fallback.paths, fallback.matchCount, sizeof(WCHAR *), ComparePaths);
             display = &fallback;
@@ -429,8 +426,6 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         for (int i = 0; i < fallback.matchCount; i++)
             free(fallback.paths[i]);
     }
-
-    free(psOutput);
 
     if (!dryRun && ctx.matchCount == 0) {
         WCHAR msg[256];
